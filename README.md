@@ -27,6 +27,7 @@ chmod +x start.sh
 ```
 
 Then open the printed URL (or run `termux-open-url http://127.0.0.1:8787`).
+If the browser shows connection refused, wait until Uvicorn says it is running, then refresh.
 
 ### Without venv
 
