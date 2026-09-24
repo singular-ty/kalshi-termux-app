@@ -40,6 +40,12 @@ Built 2026-09-24 from Operator Gemini thread scraps + engine fragments + v0 port
 - Signature path should exclude query string (implemented in client).
 - Balance field is in **cents** (divide by 100 for dollars) — matching engine scraps.
 
+## Payout-first scan (2026-09-24)
+
+Scan sorts by `best_payout_multiple` descending, then expected value / Gemini Nash payoff / half-Kelly allocation. Sizing exposes binary-contract edge (`p − price`) and Gemini half-Kelly on payout odds (`f* = (p·b − q) / b`, half of that, allocation = bankroll × fraction). Nash payoff `(p·b) − (1−p)` is labeled GO only above ~0.4. That is a heuristic, not a guaranteed win. Each enriched row includes an `explainer` object (win/lose, price, edge, payout math).
+
+TODO: ESPN scoreboard layer (public NFL/NBA/MLB/NHL/NCAAF/NCAAB JSON, fuzzy team+date match, `espn_live` / `espn_pre` model_p) was not shipped. Model probability stays a conservative shrink toward 0.5 (`market_shrink`).
+
 ## Remaining gaps
 
 1. **Authenticated endpoints need Operator keys** (`KALSHI_KEY_ID` + `secrets/kalshi.key`). Without them: public scan/status work; balance/positions/live orders do not.

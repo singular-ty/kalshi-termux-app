@@ -155,6 +155,14 @@ label { display: block; font-size: 0.72rem; color: var(--muted); margin: 8px 0 4
 .chip.yes { color: var(--green); }
 .chip.no { color: var(--red); }
 .chip.action { color: var(--amber); border-color: rgba(251,191,36,0.35); }
+.chip.payout {
+  font-size: 1rem; font-weight: 700; color: var(--cyan);
+  border-color: rgba(77,226,255,0.5); padding: 4px 10px;
+}
+.chip.go { color: var(--green); border-color: rgba(52,211,153,0.4); }
+.chip.nogo { color: var(--red); border-color: rgba(248,113,113,0.35); }
+.market-item .why { margin: 8px 0 0; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+.explainer p { margin: 8px 0; font-size: 0.88rem; line-height: 1.4; }
 
 .matrix {
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; font-size: 0.75rem;
