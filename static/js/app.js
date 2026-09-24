@@ -47,13 +47,70 @@ $$("#nav button").forEach((btn) => {
   });
 });
 
+function paintMode(s) {
+  const gate = s.order_gate || {};
+  const paper = Boolean(s.dry_run);
+  const armed = Boolean(gate.live_armed);
+  const mb = $("#badge-mode");
+  const pill = $("#mode-pill");
+  const detail = $("#mode-detail");
+  const cta = $("#live-cta");
+  const ctaTitle = $("#live-cta-title");
+  const ctaText = $("#live-cta-text");
+  const ctaBtn = $("#btn-allow-live-top");
+  if (!paper && armed) {
+    mb.textContent = "Live armed";
+    mb.className = "badge danger";
+    if (pill) {
+      pill.textContent = "Real bets (uses Kalshi balance)";
+      pill.className = "mode-pill danger";
+    }
+    if (detail) detail.textContent = "This session can place real orders. Disarm to stop.";
+    cta?.classList.add("hidden");
+  } else if (!paper) {
+    mb.textContent = "Live ready";
+    mb.className = "badge warn";
+    if (pill) {
+      pill.textContent = "Live trading allowed";
+      pill.className = "mode-pill warn";
+    }
+    if (detail) detail.textContent = "Real bets are allowed. Type ARM LIVE below before any order spends money.";
+    cta?.classList.remove("hidden");
+    if (ctaTitle) ctaTitle.textContent = "Live trading is allowed";
+    if (ctaText) ctaText.textContent = "Type ARM LIVE to turn on real orders for this session.";
+    if (ctaBtn) ctaBtn.textContent = "Turn on real orders";
+  } else {
+    mb.textContent = "Paper bets";
+    mb.className = "badge ok";
+    if (pill) {
+      pill.textContent = "Paper bets (no money)";
+      pill.className = "mode-pill ok";
+    }
+    if (detail) detail.textContent = "Orders stay on this phone. Tap Allow live trading when you want real bets.";
+    cta?.classList.remove("hidden");
+    if (ctaTitle) ctaTitle.textContent = "Want real bets?";
+    if (ctaText) ctaText.textContent = "Allow live trading here. You still type ARM LIVE before any order spends money.";
+    if (ctaBtn) ctaBtn.textContent = "Allow live trading";
+  }
+  $("#btn-allow-live")?.classList.toggle("is-current", !paper);
+  $("#btn-paper-only")?.classList.toggle("is-current", paper);
+  const arm = $("#arm-card");
+  if (arm) {
+    arm.classList.toggle("arm-ready", !paper && !armed);
+    arm.classList.toggle("arm-on", !paper && armed);
+  }
+  const safety = $("#safety-out");
+  if (safety) {
+    if (!paper && armed) safety.textContent = "Real bets are on for this session. They use your Kalshi balance.";
+    else if (!paper) safety.textContent = "Live trading is allowed. Type ARM LIVE before a real bet is sent.";
+    else safety.textContent = "Paper bets only. Allow live trading before ARM LIVE will work.";
+  }
+}
+
 async function refreshStatus() {
   try {
     const s = await api("/api/status");
-    const mode = s.order_gate?.effective_mode || (s.dry_run_env ? "DRY_RUN" : "?");
-    const mb = $("#badge-mode");
-    mb.textContent = mode;
-    mb.className = "badge " + (mode === "LIVE" ? "danger" : "ok");
+    paintMode(s);
     $("#badge-host").textContent = (s.host_key || "?") + " · " + (s.host || "").replace("https://", "");
     const ex = s.exchange;
     const eb = $("#badge-ex");
@@ -70,7 +127,6 @@ async function refreshStatus() {
     if (s.host_key) $("#host-key").value = s.host_key;
     updateCredentialStatus(s);
     $("#first-run-banner").classList.toggle("hidden", Boolean(s.has_keys));
-    $("#safety-out").textContent = JSON.stringify(s.order_gate, null, 2);
   } catch (e) {
     $("#badge-ex").textContent = "OFFLINE";
     $("#badge-ex").className = "badge danger";
@@ -84,18 +140,39 @@ function updateCredentialStatus(status) {
     badge.textContent = "No keys";
     badge.className = "badge warn";
   } else if (status.vault_unlocked) {
-    badge.textContent = "Vault unlocked";
+    badge.textContent = "Unlocked";
     badge.className = "badge ok";
   } else {
-    badge.textContent = "Keys on disk";
+    badge.textContent = "Saved on this phone";
     badge.className = "badge live";
   }
 }
 
-function openSettings() {
+function openSettings(anchor) {
   $$("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.panel === "settings"));
   $$(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-settings"));
-  $("#api-credentials-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const el = typeof anchor === "string" ? document.querySelector(anchor) : $("#api-credentials-card");
+  el?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function allowLiveTrading() {
+  if (!confirm("This can spend real money. You must still type ARM LIVE before any real order.")) return;
+  await api("/api/settings/mode", {
+    method: "POST",
+    body: JSON.stringify({ allow_live: true }),
+  });
+  toast("Live trading allowed — type ARM LIVE before a real bet");
+  openSettings("#arm-card");
+  refreshStatus();
+}
+
+async function paperBetsOnly() {
+  await api("/api/settings/mode", {
+    method: "POST",
+    body: JSON.stringify({ dry_run: true }),
+  });
+  toast("Paper bets only — no money is sent");
+  refreshStatus();
 }
 
 function payoutSort(markets) {
@@ -306,13 +383,12 @@ async function submitOrder() {
   };
   const pc = $("#order-price").value;
   if (pc !== "") body.price_cents = parseInt(pc, 10);
-  if (status.effective_mode === "LIVE") {
-    const conf = prompt('Live mode armed. Type exactly: PLACE LIVE ORDER');
-    if (conf !== "PLACE LIVE ORDER") {
+  if (status.effective_mode === "LIVE" || status.live_armed) {
+    if (!confirm("Place a real bet using your Kalshi balance?")) {
       toast("Cancelled");
       return;
     }
-    body.confirm_live = conf;
+    body.confirm_live = "PLACE LIVE ORDER";
   }
   try {
     const res = await api("/api/trading/order", { method: "POST", body: JSON.stringify(body) });
@@ -357,7 +433,21 @@ $("#btn-load-contract").onclick = loadContract;
 $("#btn-analyze").onclick = analyze;
 $("#btn-paper").onclick = submitOrder;
 $("#btn-refresh-log").onclick = refreshActivity;
-$("#btn-open-settings").onclick = openSettings;
+$("#btn-open-settings").onclick = () => openSettings("#api-credentials-card");
+$("#btn-allow-live").onclick = () => allowLiveTrading().catch((e) => toast(e.message));
+$("#btn-paper-only").onclick = () => paperBetsOnly().catch((e) => toast(e.message));
+$("#btn-allow-live-top").onclick = async () => {
+  try {
+    const s = await api("/api/status");
+    if (!s.dry_run) {
+      openSettings("#arm-card");
+      return;
+    }
+    await allowLiveTrading();
+  } catch (e) {
+    toast(e.message);
+  }
+};
 
 $("#btn-balance").onclick = async () => {
   try {
@@ -412,7 +502,7 @@ $("#btn-unlock").onclick = async () => {
         totp_code: $("#vault-totp").value || null,
       }),
     });
-    toast("Vault unlocked");
+    toast("App unlocked");
     refreshStatus();
   } catch (e) {
     toast(e.message);
@@ -434,7 +524,7 @@ $("#btn-save-keys").onclick = async () => {
         passphrase: $("#vault-pass").value || null,
       }),
     });
-    toast("Keys saved (chmod 600)");
+    toast("Saved on this phone");
     $("#key-pem").value = "";
     refreshStatus();
   } catch (e) {
@@ -494,8 +584,8 @@ $("#btn-arm").onclick = async () => {
         totp_code: $("#arm-totp").value || null,
       }),
     });
-    $("#safety-out").textContent = JSON.stringify(r, null, 2);
-    toast(r.ok ? "ARMED LIVE" : r.error);
+    if (!r.ok && $("#safety-out")) $("#safety-out").textContent = r.error || "Could not arm";
+    toast(r.ok ? "Real orders are on" : r.error);
     refreshStatus();
   } catch (e) {
     toast(e.message);
@@ -503,7 +593,7 @@ $("#btn-arm").onclick = async () => {
 };
 $("#btn-disarm").onclick = async () => {
   await api("/api/trading/disarm", { method: "POST", body: "{}" });
-  toast("Disarmed");
+  toast("Real orders paused");
   refreshStatus();
 };
 

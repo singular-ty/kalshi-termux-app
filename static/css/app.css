@@ -194,3 +194,43 @@ label { display: block; font-size: 0.72rem; color: var(--muted); margin: 8px 0 4
 }
 .mono { font-family: var(--mono); }
 .hidden { display: none !important; }
+
+.live-cta {
+  border-color: rgba(77, 226, 255, 0.4);
+  background: rgba(20, 40, 70, 0.45);
+  color: var(--text);
+}
+.mode-hero { margin: 4px 0 12px; }
+.mode-pill {
+  display: inline-block;
+  font-size: 1.05rem;
+  font-weight: 700;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+}
+.mode-pill.ok { color: var(--green); border-color: rgba(52, 211, 153, 0.45); background: rgba(52, 211, 153, 0.08); }
+.mode-pill.warn { color: var(--amber); border-color: rgba(251, 191, 36, 0.5); background: rgba(251, 191, 36, 0.08); }
+.mode-pill.danger { color: #fff; border-color: transparent; background: linear-gradient(110deg, #b91c1c, #7f1d1d); }
+.mode-detail { margin: 10px 0 0; color: var(--text); font-size: 0.9rem; }
+.mode-actions { display: flex; flex-direction: column; gap: 8px; }
+.mode-actions .btn { width: 100%; padding: 14px 16px; font-size: 1rem; }
+.btn.is-current { box-shadow: 0 0 0 2px var(--cyan); }
+.arm-ready { border-color: rgba(251, 191, 36, 0.65); }
+.arm-on { border-color: rgba(248, 113, 113, 0.7); }
+.howto { margin: 8px 0 0; padding-left: 20px; color: var(--text); font-size: 0.88rem; line-height: 1.45; }
+.howto strong { color: var(--cyan); }
+details.advanced {
+  margin: 10px 0 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.2);
+}
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+details.advanced .card { box-shadow: none; }

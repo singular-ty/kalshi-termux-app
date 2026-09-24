@@ -20,6 +20,17 @@ The import check should print `ok`. Then open the printed URL (or run `termux-op
 
 Optional: put the RSA PEM at `secrets/kalshi.key` (`chmod 600`) and set `KALSHI_KEY_ID` in `.env`. See [KALSHI_API_KEYS.md](KALSHI_API_KEYS.md).
 
+## Trading mode
+
+A fresh install uses **paper bets (no money)** until you choose otherwise. You do not edit `.env`.
+
+1. Open **Settings** and tap **Allow live trading**. Confirm the warning.
+2. Set the **app lock password**, paste your Kalshi Key ID and private key text, then **Save on this phone**.
+3. Type **ARM LIVE** before any real order. That step is what can spend your Kalshi balance.
+4. **Disarm** stops real orders and leaves live trading allowed. **Paper bets only** turns real trading off.
+
+`DRY_RUN=1` is only the boot default when no saved choice exists. The app stores the choice under local `data/` (not committed).
+
 ## If the import still fails
 
 Preload Termux libpython. The filename matches current Termux `python` (3.13):

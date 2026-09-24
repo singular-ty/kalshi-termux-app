@@ -1,4 +1,4 @@
-"""Order execution gate — DRY-RUN by default; live requires arm + typed confirm."""
+"""Order gate. Real orders only when live trading is allowed AND ARM LIVE is set."""
 from __future__ import annotations
 
 import uuid
@@ -20,7 +20,7 @@ class OrderGate:
 
     @property
     def dry_run(self) -> bool:
-        # Live only if env allows AND UI armed
+        # Real place_order only when live is allowed AND this session is armed.
         if settings.dry_run:
             return True
         return not self._live_armed
@@ -30,10 +30,22 @@ class OrderGate:
         return self._live_armed and not settings.dry_run
 
     def status(self) -> dict:
+        paper_only = bool(settings.dry_run)
+        armed = bool(self._live_armed) and not paper_only
+        if armed:
+            label = "Live armed"
+        elif not paper_only:
+            label = "Live ready"
+        else:
+            label = "Paper bets"
         return {
-            "env_dry_run": settings.dry_run,
-            "live_armed": self._live_armed,
-            "effective_mode": "DRY_RUN" if self.dry_run else "LIVE",
+            "dry_run": paper_only,
+            "env_dry_run": bool(settings.env_dry_run),
+            "live_allowed": not paper_only,
+            "live_armed": armed,
+            "orders_are_paper": not armed,
+            "effective_mode": "LIVE" if armed else "PAPER",
+            "mode_label": label,
             "confirm_phrase": LIVE_CONFIRM_PHRASE,
             "has_keys": settings.has_keys,
         }
@@ -42,22 +54,26 @@ class OrderGate:
         if settings.dry_run:
             return {
                 "ok": False,
-                "error": "DRY_RUN=1 in environment. Set DRY_RUN=0 in .env and restart to allow live arming.",
+                "error": "Paper bets are on. Tap Allow live trading first. You still type ARM LIVE before any real bet.",
             }
         if confirm_phrase.strip() != LIVE_CONFIRM_PHRASE:
-            return {"ok": False, "error": f'Type exactly "{LIVE_CONFIRM_PHRASE}" to arm.'}
+            return {"ok": False, "error": 'Type ARM LIVE exactly to turn on real orders.'}
         if not totp_ok:
-            return {"ok": False, "error": "TOTP verification failed."}
+            return {"ok": False, "error": "Extra lock code did not match."}
         if not settings.has_keys:
-            return {"ok": False, "error": "API keys not configured."}
+            return {"ok": False, "error": "Add your Kalshi key in Settings before real orders."}
         self._live_armed = True
-        self.store.log_activity("safety", "LIVE trading ARMED")
-        return {"ok": True, "mode": "LIVE"}
+        self.store.log_activity("safety", "Real orders armed")
+        return {"ok": True, "mode": "LIVE", **self.status()}
 
     def disarm(self) -> dict:
         self._live_armed = False
-        self.store.log_activity("safety", "Live trading DISARMED — back to dry-run gate")
-        return {"ok": True, "mode": "DRY_RUN"}
+        if settings.dry_run:
+            message = "Real orders off — paper bets only"
+        else:
+            message = "Real orders off — live trading still allowed until you arm again"
+        self.store.log_activity("safety", message)
+        return {"ok": True, **self.status()}
 
     def place(
         self,
@@ -95,12 +111,12 @@ class OrderGate:
                 side=side,
                 count=count,
                 price=price,
-                status="DRY_RUN",
+                status="PAPER",
                 coherence=coherence,
                 payload=payload,
                 response={"note": "Order NOT sent to Kalshi"},
             )
-            msg = f"[DRY-RUN] Would BUY {count}x {side.upper()} {ticker}"
+            msg = f"Paper bet: would BUY {count}x {side.upper()} {ticker}. Not sent to Kalshi."
             self.store.log_activity("order", msg, payload)
             return {
                 "ok": True,

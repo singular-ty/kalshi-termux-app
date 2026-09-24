@@ -14,10 +14,10 @@ This app uses Kalshi API-key authentication for Account endpoints and live tradi
 
 ### Settings UI (recommended)
 
-1. Open **Settings → API credentials**.
-2. Paste the Key ID and the downloaded PEM. The textarea accepts both `BEGIN RSA PRIVATE KEY` (PKCS#1) and `BEGIN PRIVATE KEY` (PKCS#8).
-3. Unlock or provide the local vault passphrase and choose **Save encrypted**.
-4. Check `/api/status` or the Settings badge. A configured key is shown as **Keys on disk**; after unlocking the vault it is **Vault unlocked**.
+1. Open **Settings**.
+2. Paste the **Kalshi Key ID** and the **private key text**. The box accepts both `BEGIN RSA PRIVATE KEY` and `BEGIN PRIVATE KEY`.
+3. Enter the **app lock password** (this is not your Kalshi login) and choose **Save on this phone**.
+4. Check `/api/status` or the Settings badge. A configured key is shown as **Saved on this phone**; after unlock it is **Unlocked**.
 
 The PEM is stored locally at `secrets/kalshi.key` with restrictive permissions, while the Key ID is kept in the encrypted local vault. This app does not upload credentials to a third party.
 
@@ -59,5 +59,5 @@ After revoking or clearing a key, `/api/status` should report `has_keys: false` 
 
 - GitHub clones never include Kalshi keys.
 - Keep `.env`, PEM files, and vault/database files out of source control.
-- Use **Save encrypted** and a strong local vault passphrase where possible.
+- Use **Save on this phone** and a strong app lock password where possible.
 - Revoke old or exposed keys promptly in Kalshi's API Keys list.
