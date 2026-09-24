@@ -204,6 +204,15 @@ class Store:
             finally:
                 conn.close()
 
+    def delete_setting(self, key: str) -> None:
+        with self._lock:
+            conn = self._conn()
+            try:
+                conn.execute("DELETE FROM settings_kv WHERE key=?", (key,))
+                conn.commit()
+            finally:
+                conn.close()
+
     def set_setting(self, key: str, value: str) -> None:
         with self._lock:
             conn = self._conn()

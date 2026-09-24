@@ -12,7 +12,7 @@
     <header class="topbar">
       <div class="brand">
         <h1>KALSHI PORTAL</h1>
-        <div class="sub">Termux · dry-run first · math over hype · v{{ version }}</div>
+        <div class="sub">Termux · real bets when you allow them · v{{ version }}</div>
       </div>
       <div class="badges">
         <span class="badge" id="badge-mode">MODE …</span>
@@ -23,10 +23,18 @@
 
     <div class="notice warning hidden" id="first-run-banner" role="status">
       <div>
-        <strong>API credentials are not configured.</strong>
-        <span class="muted">Account and live features need a Kalshi Key ID and private PEM.</span>
+        <strong>Add your Kalshi key in Settings to see balance.</strong>
+        <span class="muted">Scanning markets works without a key.</span>
       </div>
       <button class="btn ghost" id="btn-open-settings" type="button">Open Settings</button>
+    </div>
+
+    <div class="notice live-cta" id="live-cta" role="status">
+      <div>
+        <strong id="live-cta-title">Want real bets?</strong>
+        <span class="muted" id="live-cta-text">Allow live trading in Settings. You still type ARM LIVE before any order spends money.</span>
+      </div>
+      <button class="btn" id="btn-allow-live-top" type="button">Allow live trading</button>
     </div>
 
     <nav class="nav" id="nav">
@@ -43,6 +51,7 @@
       <div class="card">
         <h2>Highest payouts first</h2>
         <p class="muted">Open markets sorted by payout multiple, highest first. A big multiple (8x, 13x) means the market implies a low chance — not a likely win. Kelly and Nash figures are estimates. Nothing here is guaranteed.</p>
+        <p class="muted scan-help">Scanning works without a key. Paper bets (no money) stay on this phone. Real bets use your Kalshi balance after you allow live trading and type ARM LIVE.</p>
         <div class="row" style="margin-top:10px">
           <button class="btn" id="btn-scan">Scan live</button>
           <button class="btn ghost" id="btn-scan-force">Force refresh</button>
@@ -67,8 +76,8 @@
         <div id="contract-body" class="muted" style="margin-top:12px">Select a market from the scanner or enter a ticker.</div>
       </div>
       <div class="card">
-        <h2>Place / paper order</h2>
-        <p class="muted">Default is <strong>DRY-RUN</strong>. Live requires Settings → Arm live + typed confirm.</p>
+        <h2>Place a bet</h2>
+        <p class="muted">Paper bets (no money) stay on this phone. Real bets (uses Kalshi balance) need <strong>Allow live trading</strong>, then type <strong>ARM LIVE</strong>.</p>
         <div class="grid2">
           <div>
             <label>Side</label>
@@ -82,7 +91,7 @@
         <label>Limit price (cents, optional — blank = market-style payload)</label>
         <input id="order-price" type="number" placeholder="e.g. 22" />
         <div class="row" style="margin-top:12px">
-          <button class="btn" id="btn-paper">Submit (respects mode)</button>
+          <button class="btn" id="btn-paper">Place bet</button>
         </div>
         <pre class="mono muted" id="order-result" style="white-space:pre-wrap;margin-top:10px"></pre>
       </div>
@@ -122,7 +131,7 @@
     <section class="panel" id="panel-account">
       <div class="card">
         <h2>Account</h2>
-        <p class="muted">Requires KALSHI_KEY_ID + secrets/kalshi.key (RSA-PSS). Public scan works without keys.</p>
+        <p class="muted">Add your Kalshi key in Settings to see balance. Scanning markets works without a key.</p>
         <div class="row">
           <button class="btn" id="btn-balance">Balance</button>
           <button class="btn ghost" id="btn-positions">Positions</button>
@@ -134,89 +143,118 @@
 
     <!-- SETTINGS -->
     <section class="panel" id="panel-settings">
-      <div class="card">
-        <h2>API host</h2>
-        <label>Host switch</label>
-        <select id="host-key">
-          <option value="external">external-api.kalshi.com (recommended)</option>
-          <option value="elections">api.elections.kalshi.com</option>
-          <option value="demo">demo-api.kalshi.co</option>
-          <option value="trading">trading-api.kalshi.com (legacy)</option>
-        </select>
-        <div class="row" style="margin-top:10px">
-          <button class="btn ghost" id="btn-host">Apply host</button>
-          <button class="btn ghost" id="btn-ping">Ping exchange</button>
+      <div class="card" id="howto-card">
+        <h2>How to trade</h2>
+        <ol class="howto">
+          <li>Set an <strong>app lock password</strong> and tap Unlock.</li>
+          <li>Paste your <strong>Kalshi Key ID</strong> and <strong>private key text</strong>, then <strong>Save on this phone</strong>.</li>
+          <li>Open Account and check <strong>Balance</strong>.</li>
+          <li>Use Scan. <strong>Paper bets (no money)</strong> are optional and do not spend anything.</li>
+          <li>For <strong>real bets (uses Kalshi balance)</strong>: tap <strong>Allow live trading</strong>, then type <strong>ARM LIVE</strong>.</li>
+        </ol>
+      </div>
+
+      <div class="card mode-card" id="trading-mode-card">
+        <h2>Trading mode</h2>
+        <div class="mode-hero">
+          <span class="mode-pill ok" id="mode-pill">Paper bets (no money)</span>
+          <p class="mode-detail" id="mode-detail">Orders stay on this phone. Tap Allow live trading when you want real bets.</p>
         </div>
+        <div class="mode-actions">
+          <button class="btn" id="btn-allow-live" type="button">Allow live trading</button>
+          <button class="btn ghost" id="btn-paper-only" type="button">Paper bets only</button>
+        </div>
+        <p class="muted">Allow live trading does not place an order. You still type ARM LIVE before the first real bet. No .env edit needed.</p>
+      </div>
+
+      <div class="card" id="arm-card">
+        <h2>Turn on real orders (extra step)</h2>
+        <p class="muted" id="arm-help">After Allow live trading, type ARM LIVE once. Then Place bet can spend your Kalshi balance. Disarm stops real orders until you arm again.</p>
+        <label>Type ARM LIVE</label>
+        <input id="arm-phrase" placeholder="ARM LIVE" autocomplete="off" />
+        <label>Extra lock code (only if you set one up)</label>
+        <input id="arm-totp" type="text" inputmode="numeric" placeholder="Skip this if you did not set one" />
+        <div class="row" style="margin-top:10px">
+          <button class="btn danger" id="btn-arm" type="button">Arm LIVE</button>
+          <button class="btn ghost" id="btn-disarm" type="button">Disarm</button>
+        </div>
+        <p class="muted" id="safety-out" style="margin-top:8px"></p>
       </div>
 
       <div class="card">
-        <h2>Vault unlock</h2>
-        <p class="muted">Fernet-encrypted local store. Keys never leave this device.</p>
-        <label>Passphrase</label>
+        <h2>App lock password</h2>
+        <p class="muted">Password that protects your API key on this phone. Not your Kalshi login.</p>
+        <label>App lock password</label>
         <input id="vault-pass" type="password" autocomplete="current-password" />
-        <label>TOTP (if configured)</label>
-        <input id="vault-totp" type="text" inputmode="numeric" placeholder="6-digit code" />
+        <label>Extra lock code (only if you set one up)</label>
+        <input id="vault-totp" type="text" inputmode="numeric" placeholder="Skip this if you did not set one" />
         <div class="row" style="margin-top:10px">
-          <button class="btn" id="btn-unlock">Unlock</button>
-          <button class="btn ghost" id="btn-lock">Lock</button>
+          <button class="btn" id="btn-unlock" type="button">Unlock</button>
+          <button class="btn ghost" id="btn-lock" type="button">Lock</button>
         </div>
       </div>
 
       <div class="card" id="api-credentials-card">
         <div class="card-heading">
-          <h2>API credentials</h2>
+          <h2>Kalshi key</h2>
           <span class="badge warn" id="key-status-badge">No keys</span>
         </div>
-        <p class="muted">GitHub clones never include keys. Enter them here for local use; public market scans work without credentials.</p>
+        <p class="muted">This phone does not come with a key. Paste yours here. Scanning markets works without one.</p>
         <details class="api-help">
           <summary>How to get a Kalshi API key</summary>
           <ol>
             <li><a href="https://kalshi.com/account/profile" target="_blank" rel="noopener noreferrer">Log in</a> → profile/account → <strong>API Keys</strong> → <strong>Create New API Key</strong>.</li>
-            <li>Save the Key ID and download the PEM immediately; the private key cannot be retrieved later.</li>
-            <li>Paste the Key ID + PEM here → <strong>Save encrypted</strong> (or use <code>.env</code> + <code>secrets/kalshi.key</code>).</li>
+            <li>Save the Key ID and download the private key immediately. Kalshi will not show it again.</li>
+            <li>Paste the Key ID and private key text here → <strong>Save on this phone</strong>.</li>
             <li>After the new key works, revoke old keys in the same API Keys list (<strong>delete/revoke</strong>).</li>
           </ol>
           <p class="muted">Kalshi API key documentation: <a href="https://docs.kalshi.com/getting_started/api_keys" target="_blank" rel="noopener noreferrer">docs.kalshi.com/getting_started/api_keys</a></p>
         </details>
-        <label>KALSHI_KEY_ID</label>
+        <label>Kalshi Key ID</label>
         <input id="key-id" placeholder="Key ID from Kalshi" autocomplete="off" />
-        <label>Private key PEM (PKCS#1 or PKCS#8)</label>
-        <textarea id="key-pem" placeholder="-----BEGIN RSA PRIVATE KEY-----&#10;…&#10;-----END RSA PRIVATE KEY-----&#10;&#10;or&#10;&#10;-----BEGIN PRIVATE KEY-----&#10;…&#10;-----END PRIVATE KEY-----"></textarea>
-        <p class="muted">Accepted PEM headers: <code>BEGIN RSA PRIVATE KEY</code> and <code>BEGIN PRIVATE KEY</code>. Never paste a key into source control or chat.</p>
+        <label>Private key text</label>
+        <textarea id="key-pem" placeholder="Paste the private key text from Kalshi"></textarea>
+        <p class="muted">The text usually starts with <code>-----BEGIN RSA PRIVATE KEY-----</code> or <code>-----BEGIN PRIVATE KEY-----</code>. Never paste a key into source control or chat.</p>
         <div class="row" style="margin-top:10px">
-          <button class="btn" id="btn-save-keys">Save encrypted</button>
+          <button class="btn" id="btn-save-keys" type="button">Save on this phone</button>
           <button class="btn danger" id="btn-clear-keys" type="button">Clear local keys</button>
         </div>
-        <p class="muted warning-text">Local only: this deletes the local PEM and clears the runtime/vault Key ID. It does not revoke the key on Kalshi; revoke it separately at Kalshi.com. If you configured <code>.env</code>, remove it there too.</p>
+        <p class="muted warning-text">This only removes the key from this phone. It does not revoke the key on Kalshi. Revoke it separately at Kalshi.com.</p>
       </div>
 
-      <div class="card">
-        <h2>TOTP (Aegis-style)</h2>
-        <div class="row">
-          <button class="btn ghost" id="btn-totp-setup">Generate seed</button>
+      <details class="advanced">
+        <summary>Advanced: API host, extra lock code</summary>
+        <div class="card">
+          <h2>API host</h2>
+          <label>Host switch</label>
+          <select id="host-key">
+            <option value="external">external-api.kalshi.com (recommended)</option>
+            <option value="elections">api.elections.kalshi.com</option>
+            <option value="demo">demo-api.kalshi.co</option>
+            <option value="trading">trading-api.kalshi.com (legacy)</option>
+          </select>
+          <div class="row" style="margin-top:10px">
+            <button class="btn ghost" id="btn-host" type="button">Apply host</button>
+            <button class="btn ghost" id="btn-ping" type="button">Ping exchange</button>
+          </div>
         </div>
-        <pre class="mono muted" id="totp-setup-out" style="white-space:pre-wrap;margin-top:8px"></pre>
-        <label>Confirm code</label>
-        <input id="totp-confirm-code" type="text" inputmode="numeric" />
-        <input id="totp-confirm-secret" type="hidden" />
-        <div class="row" style="margin-top:10px">
-          <button class="btn" id="btn-totp-confirm">Save TOTP seed</button>
-        </div>
-      </div>
 
-      <div class="card">
-        <h2>Live trading safety</h2>
-        <p class="muted">Env DRY_RUN defaults on. To arm live: set DRY_RUN=0, unlock vault, type <span class="mono">ARM LIVE</span>, optional TOTP.</p>
-        <label>Confirm phrase</label>
-        <input id="arm-phrase" placeholder="ARM LIVE" />
-        <label>TOTP</label>
-        <input id="arm-totp" type="text" inputmode="numeric" />
-        <div class="row" style="margin-top:10px">
-          <button class="btn danger" id="btn-arm">Arm LIVE</button>
-          <button class="btn ghost" id="btn-disarm">Disarm</button>
+        <div class="card">
+          <h2>Extra lock code</h2>
+          <p class="muted">Optional second code from an authenticator app. Skip this if you only want the app lock password.</p>
+          <div class="row">
+            <button class="btn ghost" id="btn-totp-setup" type="button">Generate code setup</button>
+          </div>
+          <pre class="mono muted" id="totp-setup-out" style="white-space:pre-wrap;margin-top:8px"></pre>
+          <label>Confirm code</label>
+          <input id="totp-confirm-code" type="text" inputmode="numeric" />
+          <input id="totp-confirm-secret" type="hidden" />
+          <div class="row" style="margin-top:10px">
+            <button class="btn" id="btn-totp-confirm" type="button">Save extra lock code</button>
+          </div>
         </div>
-        <pre class="mono muted" id="safety-out" style="margin-top:8px"></pre>
-      </div>
+        <p class="muted">Technical detail: the app lock is stored in an encrypted file on this phone, and your mode choice is saved in local app data. Nothing here is your Kalshi login.</p>
+      </details>
     </section>
 
     <!-- ACTIVITY -->
@@ -229,7 +267,7 @@
         <div class="log" id="activity-log" style="margin-top:10px"></div>
       </div>
       <div class="card">
-        <h2>Order log (SQLite)</h2>
+        <h2>Order log</h2>
         <div class="log" id="order-log"></div>
       </div>
     </section>
@@ -237,7 +275,8 @@
     <p class="footer-note">
       Prediction markets involve risk of loss. Not financial advice.
       Edge / coherence / simulations are estimates — <strong>no 100% win rate</strong>.
-      Host: {{ host }} · DRY_RUN env: {{ dry_run }}
+      Fresh install uses paper bets until you tap Allow live trading. Real orders still need ARM LIVE.
+      Host: {{ host }}
     </p>
   </div>
 

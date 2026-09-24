@@ -60,7 +60,9 @@ class Settings:
     if not key_path.is_absolute():
         key_path = ROOT / key_path
 
-    dry_run: bool = _bool(os.getenv("DRY_RUN"), True)
+    # Boot default from the environment. A saved Settings choice overrides this.
+    env_dry_run: bool = _bool(os.getenv("DRY_RUN"), True)
+    dry_run: bool = env_dry_run
     kelly_fraction: float = _float(os.getenv("KELLY_FRACTION"), 0.5)
     kelly_max_fraction: float = _float(os.getenv("KELLY_MAX_FRACTION"), 0.05)
 

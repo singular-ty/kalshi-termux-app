@@ -22,6 +22,7 @@ from app.strategy.monte_carlo import double_slit_simulation, sim_to_dict
 from app.strategy.nash import nash_decision, nash_to_dict
 from app.strategy.scanner import enrich_market, scan_opportunities
 from app.trading.orders import OrderGate
+from app.ui_prefs import apply_saved_mode, save_dry_run_override
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -36,6 +37,7 @@ app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 templates = Jinja2Templates(directory=str(ROOT / "templates"))
 
 store = Store()
+apply_saved_mode(store)
 vault = Vault()
 totp_mgr = TOTPManager(vault)
 client = KalshiClient()
@@ -77,6 +79,7 @@ def api_status():
         ping = client.ping()
     except Exception as e:
         err = str(e)
+    gate = orders.status()
     return {
         "version": __version__,
         "host": settings.api_base,
@@ -84,8 +87,10 @@ def api_status():
         "hosts_available": list(HOSTS.keys()),
         "has_keys": settings.has_keys,
         "key_path_exists": settings.key_path.is_file(),
-        "dry_run_env": settings.dry_run,
-        "order_gate": orders.status(),
+        "dry_run": bool(settings.dry_run),
+        "dry_run_env": bool(settings.env_dry_run),
+        "order_gate": gate,
+        "mode_label": gate["mode_label"],
         "vault_unlocked": vault.unlocked,
         "app_unlocked": _app_unlocked,
         "totp_configured": bool(vault.unlocked and totp_mgr.has_seed()),
@@ -334,6 +339,11 @@ class HostBody(BaseModel):
     host_key: str
 
 
+class ModeBody(BaseModel):
+    dry_run: Optional[bool] = None
+    allow_live: Optional[bool] = None
+
+
 class TotpSetupBody(BaseModel):
     passphrase: str
 
@@ -426,6 +436,26 @@ def clear_settings_keys(body: ClearKeysBody):
         "has_keys": settings.has_keys,
         "remote_revocation_required": True,
     }
+
+
+@app.post("/api/settings/mode")
+def settings_mode(body: ModeBody):
+    """Persist paper vs live-allowed. Allowing live does not arm real orders."""
+    if body.dry_run is None and body.allow_live is None:
+        raise HTTPException(400, "Send dry_run or allow_live")
+    if body.dry_run is not None and body.allow_live is not None and body.dry_run == body.allow_live:
+        raise HTTPException(400, "dry_run and allow_live disagree")
+    if body.dry_run is not None:
+        dry_run = bool(body.dry_run)
+    else:
+        dry_run = not bool(body.allow_live)
+    settings.dry_run = dry_run
+    save_dry_run_override(dry_run, store)
+    if dry_run:
+        orders.disarm()
+    note = "Paper bets only" if dry_run else "Live trading allowed (ARM LIVE still required)"
+    store.log_activity("settings", note)
+    return {"ok": True, **orders.status()}
 
 
 @app.post("/api/settings/host")
