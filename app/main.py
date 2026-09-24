@@ -1,0 +1,470 @@
+"""FastAPI entry — Termux-friendly Kalshi betting portal."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Optional
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel, Field
+
+from app import __version__
+from app.config import HOSTS, settings
+from app.db.store import Store
+from app.kalshi.client import KalshiClient
+from app.security.mfa import TOTPManager
+from app.security.vault import Vault
+from app.strategy.kelly import kelly_size
+from app.strategy.monte_carlo import double_slit_simulation, sim_to_dict
+from app.strategy.nash import nash_decision, nash_to_dict
+from app.strategy.scanner import enrich_market, scan_opportunities
+from app.trading.orders import OrderGate
+
+ROOT = Path(__file__).resolve().parent.parent
+
+app = FastAPI(
+    title="Kalshi Termux Portal",
+    version=__version__,
+    docs_url="/api/docs",
+    redoc_url=None,
+)
+
+app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
+templates = Jinja2Templates(directory=str(ROOT / "templates"))
+
+store = Store()
+vault = Vault()
+totp_mgr = TOTPManager(vault)
+client = KalshiClient()
+orders = OrderGate(store, client)
+
+# Session-ish flags (local process only)
+_app_unlocked = False
+
+
+def _refresh_client() -> KalshiClient:
+    global client, orders
+    client = KalshiClient()
+    orders.client = client
+    return client
+
+
+# ---------- pages ----------
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse(
+        "index.html",
+        {
+            "request": request,
+            "version": __version__,
+            "host": settings.api_base,
+            "dry_run": settings.dry_run,
+        },
+    )
+
+
+# ---------- health / status ----------
+
+@app.get("/api/status")
+def api_status():
+    ping = None
+    err = None
+    try:
+        ping = client.ping()
+    except Exception as e:
+        err = str(e)
+    return {
+        "version": __version__,
+        "host": settings.api_base,
+        "host_key": settings.host_key,
+        "hosts_available": list(HOSTS.keys()),
+        "has_keys": settings.has_keys,
+        "key_path_exists": settings.key_path.is_file(),
+        "dry_run_env": settings.dry_run,
+        "order_gate": orders.status(),
+        "vault_unlocked": vault.unlocked,
+        "app_unlocked": _app_unlocked,
+        "totp_configured": bool(vault.unlocked and totp_mgr.has_seed()),
+        "bucket": client.bucket.status(),
+        "exchange": ping,
+        "exchange_error": err,
+        "disclaimer": "Not financial advice. No guaranteed win rate. Risk of loss.",
+    }
+
+
+@app.get("/api/ping")
+def api_ping():
+    try:
+        return client.ping()
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+# ---------- markets ----------
+
+@app.get("/api/markets/scan")
+def api_scan(limit: int = 100, bankroll: float = 1000.0, refresh: bool = False):
+    cache_key = f"scan:{limit}:{bankroll}"
+    if not refresh:
+        cached = store.cache_get(cache_key)
+        if cached:
+            cached["from_cache"] = True
+            return cached
+    try:
+        result = scan_opportunities(client, limit=limit, bankroll=bankroll)
+    except Exception as e:
+        store.log_activity("error", f"Scan failed: {e}")
+        raise HTTPException(502, str(e))
+    result["from_cache"] = False
+    store.cache_set(cache_key, result, ttl=settings.cache_ttl)
+    store.log_activity(
+        "scan",
+        f"Scanned {result['scanned']} markets → {result['count']} enriched via {result['host']}",
+    )
+    return result
+
+
+@app.get("/api/markets/{ticker}")
+def api_market(ticker: str, bankroll: float = 1000.0):
+    try:
+        raw = client.get_market(ticker)
+        market = raw.get("market") or raw
+        enriched = enrich_market(market, bankroll=bankroll)
+        ob = None
+        try:
+            ob = client.get_orderbook(ticker)
+        except Exception:
+            ob = None
+        return {
+            "ticker": ticker,
+            "host": client.host,
+            "raw": market,
+            "enriched": enriched,
+            "orderbook": ob,
+        }
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+# ---------- strategy ----------
+
+class AnalyzeBody(BaseModel):
+    yes_ask: float = Field(..., gt=0, lt=1.5)
+    no_ask: float = Field(..., gt=0, lt=1.5)
+    model_prob_yes: Optional[float] = None
+    bankroll: float = 1000.0
+    volume: float = 0
+    open_interest: float = 0
+    run_simulation: bool = True
+
+
+@app.post("/api/strategy/analyze")
+def api_analyze(body: AnalyzeBody):
+    # Accept cents accidentally passed as >1
+    yes = body.yes_ask / 100.0 if body.yes_ask > 1 else body.yes_ask
+    no = body.no_ask / 100.0 if body.no_ask > 1 else body.no_ask
+    nash = nash_decision(
+        yes_ask=yes,
+        no_ask=no,
+        model_prob_yes=body.model_prob_yes,
+        volume=body.volume,
+        open_interest=body.open_interest,
+    )
+    if nash.action == "BUY_YES":
+        k = kelly_size(nash.model_prob_yes, yes, body.bankroll, settings.kelly_fraction, settings.kelly_max_fraction)
+        side = "yes"
+        price = yes
+    elif nash.action == "BUY_NO":
+        k = kelly_size(1 - nash.model_prob_yes, no, body.bankroll, settings.kelly_fraction, settings.kelly_max_fraction)
+        side = "no"
+        price = no
+    else:
+        k = kelly_size(0.5, min(yes, no), body.bankroll, settings.kelly_fraction, settings.kelly_max_fraction)
+        side = "pass"
+        price = min(yes, no)
+
+    sim = None
+    if body.run_simulation:
+        odds = 1.0 / price if price > 0 else 2.0
+        sim = sim_to_dict(
+            double_slit_simulation(
+                base_prob=nash.model_prob_yes if side != "no" else 1 - nash.model_prob_yes,
+                payout_odds=odds,
+            )
+        )
+
+    return {
+        "nash": nash_to_dict(nash),
+        "kelly": {
+            "side": side,
+            "full_kelly": k.full_kelly,
+            "fractional_kelly": k.fractional_kelly,
+            "allocation_usd": k.allocation_usd,
+            "kelly_pct_of_bankroll": k.kelly_pct_of_bankroll,
+            "contracts": k.contracts,
+            "edge": k.edge,
+            "expected_value_per_contract": k.expected_value_per_contract,
+            "reason": k.reason,
+        },
+        "simulation": sim,
+        "disclaimer": "Model estimates only. Not financial advice. No 100% win rate.",
+    }
+
+
+# ---------- account ----------
+
+@app.get("/api/account/balance")
+def api_balance():
+    if not settings.has_keys:
+        return {"ok": False, "error": "Keys not configured", "authenticated": False}
+    try:
+        data = client.get_balance()
+        bal = data.get("balance", 0)
+        # Kalshi returns cents
+        dollars = bal / 100.0 if isinstance(bal, (int, float)) else bal
+        store.log_activity("account", f"Balance fetched: ${dollars}")
+        return {"ok": True, "raw": data, "balance_dollars": dollars, "host": client.host}
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/account/positions")
+def api_positions():
+    if not settings.has_keys:
+        return {"ok": False, "error": "Keys not configured", "authenticated": False}
+    try:
+        return {"ok": True, "data": client.get_positions(), "host": client.host}
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.get("/api/account/orders")
+def api_acct_orders(status: Optional[str] = None):
+    if not settings.has_keys:
+        return {"ok": False, "error": "Keys not configured", "authenticated": False}
+    try:
+        return {"ok": True, "data": client.get_orders(status=status), "host": client.host}
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+# ---------- trading ----------
+
+class ArmBody(BaseModel):
+    confirm_phrase: str
+    totp_code: Optional[str] = None
+
+
+class OrderBody(BaseModel):
+    ticker: str
+    side: str
+    count: int = Field(..., ge=1, le=10000)
+    price_cents: Optional[int] = None
+    coherence: Optional[float] = None
+    confirm_live: Optional[str] = None
+
+
+@app.get("/api/trading/status")
+def trading_status():
+    return orders.status()
+
+
+@app.post("/api/trading/arm")
+def trading_arm(body: ArmBody):
+    totp_ok = True
+    if vault.unlocked and totp_mgr.has_seed():
+        secret = totp_mgr.load_seed()
+        totp_ok = totp_mgr.verify(secret or "", body.totp_code or "")
+    return orders.arm_live(body.confirm_phrase, totp_ok=totp_ok)
+
+
+@app.post("/api/trading/disarm")
+def trading_disarm():
+    return orders.disarm()
+
+
+@app.post("/api/trading/order")
+def trading_order(body: OrderBody):
+    if not orders.dry_run:
+        if body.confirm_live != "PLACE LIVE ORDER":
+            raise HTTPException(
+                400,
+                'Live mode requires confirm_live="PLACE LIVE ORDER"',
+            )
+    result = orders.place(
+        ticker=body.ticker.strip(),
+        side=body.side,
+        count=body.count,
+        price_cents=body.price_cents,
+        coherence=body.coherence,
+    )
+    return result
+
+
+# ---------- settings / vault / MFA ----------
+
+class UnlockBody(BaseModel):
+    passphrase: str
+    totp_code: Optional[str] = None
+
+
+class KeysBody(BaseModel):
+    key_id: str
+    pem: str
+    passphrase: Optional[str] = None
+
+
+class ClearKeysBody(BaseModel):
+    passphrase: Optional[str] = None
+
+
+class HostBody(BaseModel):
+    host_key: str
+
+
+class TotpSetupBody(BaseModel):
+    passphrase: str
+
+
+class TotpConfirmBody(BaseModel):
+    secret: str
+    code: str
+
+
+@app.post("/api/vault/unlock")
+def vault_unlock(body: UnlockBody):
+    global _app_unlocked
+    ok = vault.unlock(body.passphrase)
+    if not ok:
+        raise HTTPException(401, "Invalid passphrase")
+    # If TOTP configured, require code
+    if totp_mgr.has_seed():
+        if not totp_mgr.verify(totp_mgr.load_seed() or "", body.totp_code or ""):
+            vault.lock()
+            raise HTTPException(401, "Invalid TOTP code")
+    # Restore key id from vault if present
+    kid = vault.get("kalshi_key_id")
+    if kid:
+        settings.key_id = kid
+        os.environ["KALSHI_KEY_ID"] = kid
+        _refresh_client()
+    _app_unlocked = True
+    store.log_activity("security", "Vault unlocked")
+    return {"ok": True, "totp_configured": totp_mgr.has_seed()}
+
+
+@app.post("/api/vault/lock")
+def vault_lock():
+    global _app_unlocked
+    vault.lock()
+    orders.disarm()
+    _app_unlocked = False
+    store.log_activity("security", "Vault locked; live disarmed")
+    return {"ok": True}
+
+
+@app.post("/api/settings/keys")
+def settings_keys(body: KeysBody):
+    if not vault.unlocked:
+        if body.passphrase:
+            if not vault.unlock(body.passphrase):
+                raise HTTPException(401, "Could not unlock vault")
+        else:
+            raise HTTPException(401, "Unlock vault first (or provide passphrase)")
+    key_id = body.key_id.strip()
+    pem = body.pem.strip()
+    if not key_id:
+        raise HTTPException(400, "Key ID is required")
+    if not any(header in pem for header in ("BEGIN RSA PRIVATE KEY", "BEGIN PRIVATE KEY")):
+        raise HTTPException(400, "PEM must contain an RSA PRIVATE KEY or PRIVATE KEY header")
+    path = vault.store_api_credentials(key_id, pem)
+    _refresh_client()
+    store.log_activity("security", "API credentials stored (encrypted id + chmod 600 PEM)")
+    return {"ok": True, "key_path": str(path), "has_keys": settings.has_keys}
+
+
+@app.post("/api/settings/keys/clear")
+def clear_settings_keys(body: ClearKeysBody):
+    """Delete only local credentials; this never calls Kalshi's remote API."""
+    if vault.exists() and not vault.unlocked:
+        if body.passphrase:
+            if not vault.unlock(body.passphrase):
+                raise HTTPException(401, "Could not unlock vault")
+        else:
+            raise HTTPException(401, "Unlock vault first (or provide passphrase)")
+
+    key_path = settings.key_path
+    deleted = False
+    try:
+        if key_path.is_file():
+            key_path.unlink()
+            deleted = True
+    except OSError as exc:
+        raise HTTPException(500, f"Could not delete local key file: {exc}")
+
+    if vault.unlocked:
+        vault.delete("kalshi_key_id")
+    settings.key_id = ""
+    os.environ.pop("KALSHI_KEY_ID", None)
+    _refresh_client()
+    store.log_activity("security", "Local API credentials cleared (Kalshi key not remotely revoked)")
+    return {
+        "ok": True,
+        "local_key_deleted": deleted,
+        "has_keys": settings.has_keys,
+        "remote_revocation_required": True,
+    }
+
+
+@app.post("/api/settings/host")
+def settings_host(body: HostBody):
+    key = body.host_key.strip().lower()
+    if key not in HOSTS:
+        raise HTTPException(400, f"Unknown host_key. Choose from {list(HOSTS)}")
+    settings.host_key = key
+    os.environ["KALSHI_HOST"] = key
+    store.set_setting("host_key", key)
+    _refresh_client()
+    store.log_activity("settings", f"API host switched to {key} → {settings.api_base}")
+    return {"ok": True, "host_key": key, "host": settings.api_base}
+
+
+@app.post("/api/mfa/setup")
+def mfa_setup(body: TotpSetupBody):
+    if not vault.unlocked:
+        if not vault.unlock(body.passphrase):
+            raise HTTPException(401, "Invalid passphrase")
+    secret = totp_mgr.generate_secret()
+    uri = totp_mgr.provisioning_uri(secret)
+    # Do not save until confirm
+    return {"ok": True, "secret": secret, "otpauth_uri": uri, "note": "Confirm with a code to save."}
+
+
+@app.post("/api/mfa/confirm")
+def mfa_confirm(body: TotpConfirmBody):
+    if not vault.unlocked:
+        raise HTTPException(401, "Unlock vault first")
+    if not totp_mgr.verify(body.secret, body.code):
+        raise HTTPException(400, "Code does not match secret")
+    totp_mgr.save_seed(body.secret)
+    store.log_activity("security", "TOTP seed saved to encrypted vault")
+    return {"ok": True}
+
+
+# ---------- activity ----------
+
+@app.get("/api/activity")
+def api_activity(limit: int = 50):
+    return {
+        "activity": store.recent_activity(limit),
+        "orders": store.recent_orders(limit),
+    }
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "version": __version__}
