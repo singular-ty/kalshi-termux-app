@@ -93,7 +93,7 @@ The **Clear local keys** button only removes the local PEM and runtime/vault Key
 
 ## Panels
 
-1. **Markets** — live open-market scan, payout multiples, Nash action, Kelly size  
+1. **Markets** — scan sorts highest payout multiple first; sizing uses Gemini half-Kelly on payout odds plus Nash payoff, with a plain-English odds explainer (not a guaranteed win)  
 2. **Contract** — detail + paper/live order gate  
 3. **Nash / Kelly** — payoff matrix + Monte Carlo simulation  
 4. **Account** — balance / positions / orders (keys required)  

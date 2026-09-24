@@ -98,6 +98,18 @@ function openSettings() {
   $("#api-credentials-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
+function payoutSort(markets) {
+  return (markets || []).slice().sort((a, b) => {
+    const d = (Number(b.best_payout_multiple) || 0) - (Number(a.best_payout_multiple) || 0);
+    if (d) return d;
+    const ev =
+      (Number(b.kelly?.expected_value_per_contract) || 0) -
+      (Number(a.kelly?.expected_value_per_contract) || 0);
+    if (ev) return ev;
+    return (Number(b.nash_payoff_gemini) || 0) - (Number(a.nash_payoff_gemini) || 0);
+  });
+}
+
 function renderMarkets(data) {
   const list = $("#market-list");
   list.innerHTML = "";
@@ -106,26 +118,36 @@ function renderMarkets(data) {
     data.from_cache ? "cache HIT" : "live fetch",
     `host: ${data.host}`,
     `enriched ${data.count}/${data.scanned}`,
+    `sort ${data.sort || "payout"}`,
     `TTL ${data.cache_ttl_seconds}s`,
   ].join(" · ");
   $("#scan-meta").textContent = meta + " — " + (data.disclaimer || "");
 
-  (data.markets || []).slice(0, 60).forEach((m) => {
+  payoutSort(data.markets).slice(0, 60).forEach((m) => {
     const div = document.createElement("div");
     div.className = "market-item";
     const action = m.nash?.action || "PASS";
+    const sig = m.signal === "GO" ? "GO" : "NO-GO";
+    const gk = m.gemini_kelly || {};
+    const why = (m.explainer && (m.explainer.edge_plain || m.explainer.why_odds)) || "";
+    const mult = m.best_payout_multiple ?? "—";
     div.innerHTML = `
-      <div class="ticker">${m.ticker}</div>
+      <div class="stats">
+        <span class="chip payout">${mult}x</span>
+        <span class="chip ${sig === "GO" ? "go" : "nogo"}">${sig}</span>
+        <span class="chip">Gemini Kelly $${gk.allocation ?? "—"}</span>
+        <span class="chip">edge ${m.kelly?.edge ?? "—"}</span>
+        <span class="chip">EV ${m.kelly?.expected_value_per_contract ?? "—"}</span>
+      </div>
+      <div class="ticker" style="margin-top:6px">${escapeHtml(m.ticker || "")}</div>
       <div class="title">${escapeHtml(m.title || "")}</div>
       <div class="stats">
         <span class="chip yes">YES ${m.yes_ask_cents}¢ · ${m.yes_payout_multiple}x</span>
         <span class="chip no">NO ${m.no_ask_cents}¢ · ${m.no_payout_multiple}x</span>
         <span class="chip action">${action}</span>
-        <span class="chip">coh ${m.nash?.coherence ?? "—"}</span>
-        <span class="chip">edge ${m.kelly?.edge ?? "—"}</span>
-        <span class="chip">Kelly ${m.kelly?.contracts ?? 0} ct</span>
-        <span class="chip">score ${m.score}</span>
-      </div>`;
+        <span class="chip">Nash ${m.nash_payoff_gemini ?? "—"}</span>
+      </div>
+      <p class="why">${escapeHtml(why)}</p>`;
     div.addEventListener("click", () => openContract(m.ticker, m));
     list.appendChild(div);
   });
@@ -143,7 +165,9 @@ async function runScan(force = false) {
   const limit = parseInt($("#scan-limit").value || "80", 10);
   toast(force ? "Force refreshing…" : "Scanning…");
   try {
-    const data = await api(`/api/markets/scan?limit=${limit}&refresh=${force ? "true" : "false"}`);
+    const data = await api(
+      `/api/markets/scan?limit=${limit}&refresh=${force ? "true" : "false"}&sort=payout`
+    );
     renderMarkets(data);
     toast(`Scan done · ${data.count} markets`);
   } catch (e) {
@@ -187,20 +211,35 @@ function paintContract(data) {
     return;
   }
   const notes = (e.nash?.socratic_notes || []).map((n) => `<li>${escapeHtml(n)}</li>`).join("");
+  const ex = e.explainer || {};
+  const gk = e.gemini_kelly || {};
+  const sig = e.signal === "GO" ? "GO" : "NO-GO";
   $("#contract-body").innerHTML = `
     <div class="ticker mono">${escapeHtml(e.ticker)}</div>
     <div style="margin:6px 0 10px">${escapeHtml(e.title)}</div>
     <div class="stats">
+      <span class="chip payout">${e.best_payout_multiple ?? "—"}x</span>
+      <span class="chip ${sig === "GO" ? "go" : "nogo"}">${sig}</span>
       <span class="chip yes">YES ask ${e.yes_ask_cents}¢ (${e.yes_payout_multiple}x)</span>
       <span class="chip no">NO ask ${e.no_ask_cents}¢ (${e.no_payout_multiple}x)</span>
       <span class="chip action">${e.nash.action}</span>
-      <span class="chip">coherence ${e.nash.coherence}</span>
-      <span class="chip">vol ${e.volume}</span>
-      <span class="chip">OI ${e.open_interest}</span>
+      <span class="chip">Gemini Kelly $${gk.allocation ?? "—"}</span>
+      <span class="chip">edge ${e.kelly?.edge ?? "—"}</span>
+    </div>
+    <div class="explainer card" style="margin-top:12px;padding:12px">
+      <h3>Odds explainer</h3>
+      <p><strong>Price.</strong> ${escapeHtml(ex.price_plain || "")}</p>
+      <p><strong>You win if.</strong> ${escapeHtml(ex.win_if || "")}</p>
+      <p><strong>You lose if.</strong> ${escapeHtml(ex.lose_if || "")}</p>
+      <p><strong>Why these odds.</strong> ${escapeHtml(ex.why_odds || "")}</p>
+      <p><strong>Edge.</strong> ${escapeHtml(ex.edge_plain || "")}</p>
+      <p><strong>Payout.</strong> ${escapeHtml(ex.payout_plain || "")}</p>
+      <p><strong>Size.</strong> ${escapeHtml(ex.size_plain || "")}</p>
+      <p class="muted"><strong>Risk.</strong> ${escapeHtml(ex.risk_plain || "High multiple ≠ likely. Not guaranteed.")}</p>
     </div>
     <h3>Kelly</h3>
     <p class="muted mono">side=${e.kelly.side} · contracts=${e.kelly.contracts} · alloc=$${e.kelly.allocation_usd}
-      · edge=${e.kelly.edge} · ${escapeHtml(e.kelly.reason)}</p>
+      · edge=${e.kelly.edge} · Nash payoff=${e.nash_payoff_gemini ?? "—"} · ${escapeHtml(e.kelly.reason)}</p>
     <h3>Socratic notes</h3>
     <ul class="muted" style="margin:0;padding-left:18px">${notes}</ul>
     <p class="muted" style="margin-top:8px">Host: ${escapeHtml(data.host || "")} · close: ${escapeHtml(e.close_time || "—")}</p>

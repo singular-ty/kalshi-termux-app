@@ -71,3 +71,66 @@ def kelly_size(
         expected_value_per_contract=round(edge, 4),
         reason="Sized" if contracts > 0 else "Edge positive but size rounds to 0",
     )
+
+
+def _clamp_prob(p: float, lo: float = 0.01, hi: float = 0.99) -> float:
+    return max(lo, min(hi, float(p)))
+
+
+@dataclass
+class PayoutKellyResult:
+    """Gemini payout-odds Kelly (not the binary net-odds form in kelly_size)."""
+
+    kelly_f: float
+    fractional: float
+    allocation: float
+    kelly_pct: float
+    payout_odds: float
+    p: float
+
+
+def kelly_from_payout_odds(
+    p: float,
+    payout_odds: float,
+    bankroll: float,
+    fraction: float = 0.5,
+) -> PayoutKellyResult:
+    """Half-Kelly on gross payout multiple. Mirrors ai_agent_ws.py scrap.
+
+    payout_odds = 1 / price (e.g. 20¢ → 5x). Treat payout_odds as b:
+        p = clamp(coherence or model probability of the side)
+        q = 1 - p
+        kelly_f = (p * payout_odds - q) / payout_odds
+        fractional = max(0, kelly_f * fraction)  # default half-Kelly
+        allocation = bankroll * fractional
+
+    This does not apply the binary Kelly bankroll cap. Binary contract
+    edge (p * $1 - price) stays on kelly_size.
+    """
+    p_clamped = _clamp_prob(p)
+    q = 1.0 - p_clamped
+    b = float(payout_odds)
+    if b <= 0:
+        return PayoutKellyResult(0.0, 0.0, 0.0, 0.0, 0.0, round(p_clamped, 4))
+
+    kelly_f = (p_clamped * b - q) / b
+    fractional = max(0.0, kelly_f * float(fraction))
+    allocation = float(bankroll) * fractional
+    return PayoutKellyResult(
+        kelly_f=round(kelly_f, 6),
+        fractional=round(fractional, 6),
+        allocation=round(allocation, 2),
+        kelly_pct=round(fractional * 100, 2),
+        payout_odds=round(b, 4),
+        p=round(p_clamped, 4),
+    )
+
+
+def gemini_nash_payoff(p: float, payout_odds: float) -> float:
+    """Nash payoff scrap: (p * payout_odds) - ((1 - p) * 1.0).
+
+    Callers treat payoff > ~0.4 as GO. That threshold is a heuristic,
+    not a claim the bet wins.
+    """
+    p_clamped = _clamp_prob(p)
+    return (p_clamped * float(payout_odds)) - ((1.0 - p_clamped) * 1.0)

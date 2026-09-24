@@ -107,15 +107,23 @@ def api_ping():
 # ---------- markets ----------
 
 @app.get("/api/markets/scan")
-def api_scan(limit: int = 100, bankroll: float = 1000.0, refresh: bool = False):
-    cache_key = f"scan:{limit}:{bankroll}"
+def api_scan(
+    limit: int = 100,
+    bankroll: float = 1000.0,
+    refresh: bool = False,
+    sort: str = "payout",
+):
+    sort_mode = (sort or "payout").strip().lower()
+    if sort_mode not in {"payout", "score"}:
+        sort_mode = "payout"
+    cache_key = f"scan:{limit}:{bankroll}:{sort_mode}"
     if not refresh:
         cached = store.cache_get(cache_key)
         if cached:
             cached["from_cache"] = True
             return cached
     try:
-        result = scan_opportunities(client, limit=limit, bankroll=bankroll)
+        result = scan_opportunities(client, limit=limit, bankroll=bankroll, sort=sort_mode)
     except Exception as e:
         store.log_activity("error", f"Scan failed: {e}")
         raise HTTPException(502, str(e))

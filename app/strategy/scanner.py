@@ -6,8 +6,13 @@ from typing import Any, Optional
 
 from app.config import settings
 from app.kalshi.client import KalshiClient
-from app.strategy.kelly import kelly_size
+from app.strategy.kelly import gemini_nash_payoff, kelly_from_payout_odds, kelly_size
 from app.strategy.nash import nash_decision, nash_to_dict
+
+# GO if Gemini Nash payoff clears this. Heuristic only — not a win guarantee.
+NASH_GO_THRESHOLD = 0.4
+# TODO: ESPN scoreboard (NFL/NBA/MLB/NHL/NCAAF/NCAAB) is not wired.
+# model_p stays a shrink toward 0.5 ("market_shrink") until that lands.
 
 
 def _cents_to_dollars(val: Any) -> Optional[float]:
@@ -43,6 +48,138 @@ def _payout_multiple(price: float) -> float:
     if price <= 0:
         return 0.0
     return 1.0 / price
+
+
+def _fmt_cents(price: float) -> str:
+    cents = price * 100.0
+    if abs(cents - round(cents)) < 0.05:
+        return str(int(round(cents)))
+    return f"{cents:.1f}"
+
+
+def _fmt_pct(price: float) -> str:
+    pct = price * 100.0
+    if abs(pct - round(pct)) < 0.05:
+        return str(int(round(pct)))
+    return f"{pct:.1f}"
+
+
+def _build_explainer(
+    market: dict,
+    *,
+    side: str,
+    price: float,
+    payout_odds: float,
+    model_p: float,
+    allocation: float,
+    binary_contracts: int,
+) -> dict:
+    """Plain-English odds card. Estimates only — never a guaranteed win."""
+    side_u = side.upper()
+    cents = _fmt_cents(price)
+    implied = _fmt_pct(price)
+    mult = round(payout_odds, 2)
+    title = (market.get("title") or market.get("subtitle") or "").strip()
+    yes_sub = (market.get("yes_sub_title") or "").strip()
+    no_sub = (market.get("no_sub_title") or "").strip()
+    rules = (market.get("rules_primary") or market.get("rules_secondary") or "").strip()
+
+    if side == "yes":
+        win_outcome = yes_sub or title or "YES settles"
+        lose_outcome = no_sub or "NO settles"
+    else:
+        win_outcome = no_sub or (f"the NO side of: {title}" if title else "NO settles")
+        lose_outcome = yes_sub or title or "YES settles"
+
+    win_if = f"You win if {win_outcome}."
+    lose_if = f"You lose if {lose_outcome}."
+    if title and title not in win_if:
+        win_if = f"{win_if} Market: {title}."
+    if rules:
+        win_if = f"{win_if} {rules[:500]}"
+
+    price_plain = (
+        f"{side_u} at {cents}¢ ≈ market thinks ~{implied}% chance. "
+        f"If you buy {side_u} for {cents}¢ and you're right, Kalshi pays $1 → about {mult:g}x "
+        f"(1/{price:.4g}). If wrong, you lose the {cents}¢."
+    )
+    why_odds = (
+        f"The {side_u} ask ({cents}¢) is the market-implied chance (~{implied}%). "
+        "No ESPN scoreboard is attached, so the model uses a conservative shrink from that "
+        "price toward 50% (source: market_shrink). That is an estimate, not a lock."
+    )
+    edge = model_p - price
+    gk_contracts = int(allocation // price) if price > 0 and allocation > 0 else 0
+    contracts = gk_contracts or binary_contracts
+    edge_plain = (
+        f"Book says {_fmt_pct(price)}%. Our model says {_fmt_pct(model_p)}% "
+        f"(market shrink, not a lock). Edge ≈ {edge:+.3f}. "
+        f"Half-Kelly suggests ${allocation:.2f}"
+        + (f" / {contracts} contracts." if contracts else " (size rounds to 0 contracts).")
+    )
+    profit = max(0.0, 1.0 - price)
+    stake_k = gk_contracts * price
+    payout_plain = (
+        f"Per contract: stake ${price:.2f}, payout if win $1.00, "
+        f"profit if win ${profit:.2f}, loss if lose ${price:.2f}. "
+        f"At Gemini half-Kelly size ({gk_contracts} contracts): stake ${stake_k:.2f}, "
+        f"payout if win ${gk_contracts * 1.0:.2f}, profit if win ${gk_contracts * profit:.2f}, "
+        f"loss if lose ${stake_k:.2f}."
+    )
+    size_plain = (
+        f"Gemini half-Kelly puts ${allocation:.2f} of bankroll on this {side_u} side "
+        f"({mult:g}x). Binary Kelly (capped) suggests {binary_contracts} contracts. "
+        "Both are sizing math, not a prediction that the side wins."
+    )
+    risk_plain = (
+        "A high payout multiple means the market implies a low chance. "
+        "It is not a likely win, and nothing here is guaranteed."
+    )
+    return {
+        "win_if": win_if,
+        "lose_if": lose_if,
+        "price_plain": price_plain,
+        "payout_plain": payout_plain,
+        "why_odds": why_odds,
+        "edge_plain": edge_plain,
+        "size_plain": size_plain,
+        "risk_plain": risk_plain,
+    }
+
+
+def sort_scan_rows(rows: list[dict], sort: str = "payout") -> list[dict]:
+    """Highest payout multiple first, then EV / Nash payoff / Kelly dollars.
+
+    `sort=score` keeps the money-seeking score as the primary key for callers
+    that ask for it. Default is payout.
+    """
+    mode = (sort or "payout").strip().lower()
+
+    def _ev(row: dict) -> float:
+        return float((row.get("kelly") or {}).get("expected_value_per_contract") or 0.0)
+
+    def _alloc(row: dict) -> float:
+        return float((row.get("gemini_kelly") or {}).get("allocation") or 0.0)
+
+    def _nash(row: dict) -> float:
+        return float(row.get("nash_payoff_gemini") or 0.0)
+
+    if mode == "score":
+        rows.sort(
+            key=lambda r: (float(r.get("score") or 0.0), float(r.get("best_payout_multiple") or 0.0), _nash(r)),
+            reverse=True,
+        )
+    else:
+        rows.sort(
+            key=lambda r: (
+                float(r.get("best_payout_multiple") or 0.0),
+                _ev(r),
+                _nash(r),
+                _alloc(r),
+            ),
+            reverse=True,
+        )
+    return rows
 
 
 def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
@@ -107,35 +244,63 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
         open_interest=oi,
     )
 
-    # Size the recommended side
-    if nash.action == "BUY_YES":
-        side_price = yes_ask
-        model_p = nash.model_prob_yes
-        side = "yes"
-    elif nash.action == "BUY_NO":
-        side_price = no_ask
-        model_p = 1.0 - nash.model_prob_yes
-        side = "no"
+    yes_mult = _payout_multiple(yes_ask)
+    no_mult = _payout_multiple(no_ask)
+    # Lead with the cheap high-multiple side (2x–13x+ tails).
+    if yes_mult >= no_mult:
+        best_side = "yes"
+        best_price = yes_ask
+        best_p = float(nash.model_prob_yes)
+        best_mult = yes_mult
     else:
-        side_price = min(yes_ask, no_ask)
-        model_p = max(nash.model_prob_yes, 1.0 - nash.model_prob_yes)
-        side = "pass"
+        best_side = "no"
+        best_price = no_ask
+        best_p = 1.0 - float(nash.model_prob_yes)
+        best_mult = no_mult
 
+    # Binary-contract Kelly: edge = p * $1 - price (capped fraction).
     kelly = kelly_size(
-        model_prob=model_p if side != "pass" else 0.5,
-        contract_price=side_price,
+        model_prob=best_p,
+        contract_price=best_price,
         bankroll=bankroll,
         fraction=settings.kelly_fraction,
         max_fraction=settings.kelly_max_fraction,
     )
+    # Gemini half-Kelly on gross payout odds. fraction 0.5 matches the scrap.
+    gk = kelly_from_payout_odds(
+        p=best_p,
+        payout_odds=best_mult,
+        bankroll=bankroll,
+        fraction=0.5,
+    )
+    nash_pay = gemini_nash_payoff(best_p, best_mult)
+    signal = "GO" if nash_pay > NASH_GO_THRESHOLD else "NO-GO"
+    # model_p_source stays market_shrink until an ESPN layer exists.
+    model_p_source = "market_shrink"
 
-    yes_mult = _payout_multiple(yes_ask)
-    no_mult = _payout_multiple(no_ask)
-    best_mult = max(yes_mult, no_mult)
     cheap = (yes_ask * 100 <= settings.max_contract_price_cents) or (
         no_ask * 100 <= settings.max_contract_price_cents
     )
     high_payout = best_mult >= settings.min_payout_multiple
+    thin_penalty = 0.5 if (vol + oi) < 100 else 0.0
+    pos_ev = max(0.0, float(kelly.expected_value_per_contract))
+    # Money-seeking rank: payout multiple + positive EV + Nash payoff + half-Kelly.
+    score = (
+        best_mult
+        + (pos_ev * 10.0)
+        + (max(0.0, nash_pay) * 2.0)
+        + (gk.fractional * 10.0)
+        - thin_penalty
+    )
+    explainer = _build_explainer(
+        m,
+        side=best_side,
+        price=best_price,
+        payout_odds=best_mult,
+        model_p=best_p,
+        allocation=gk.allocation,
+        binary_contracts=kelly.contracts,
+    )
 
     return {
         "ticker": ticker,
@@ -148,6 +313,9 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
         "yes_payout_multiple": round(yes_mult, 2),
         "no_payout_multiple": round(no_mult, 2),
         "best_payout_multiple": round(best_mult, 2),
+        "best_side": best_side,
+        "payout_odds": round(best_mult, 4),
+        "model_p_source": model_p_source,
         "spread_cents": round(spread_cents, 2),
         "volume": vol,
         "open_interest": oi,
@@ -156,8 +324,16 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
         "cheap_contract": cheap,
         "high_payout": high_payout,
         "nash": nash_to_dict(nash),
+        "nash_payoff_gemini": round(nash_pay, 4),
+        "signal": signal,
+        "gemini_kelly": {
+            "allocation": gk.allocation,
+            "kelly_pct": gk.kelly_pct,
+            "payout_odds": gk.payout_odds,
+            "p": gk.p,
+        },
         "kelly": {
-            "side": side,
+            "side": best_side,
             "full_kelly": kelly.full_kelly,
             "fractional_kelly": kelly.fractional_kelly,
             "allocation_usd": kelly.allocation_usd,
@@ -167,13 +343,8 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
             "expected_value_per_contract": kelly.expected_value_per_contract,
             "reason": kelly.reason,
         },
-        "score": round(
-            (nash.your_best_payoff * 10)
-            + (nash.coherence * 2)
-            + (0.5 if high_payout and cheap else 0)
-            + min(1.0, (vol + oi) / 5000.0),
-            4,
-        ),
+        "explainer": explainer,
+        "score": round(score, 4),
     }
 
 
@@ -182,6 +353,7 @@ def scan_opportunities(
     limit: Optional[int] = None,
     bankroll: float = 1000.0,
     only_actionable: bool = False,
+    sort: str = "payout",
 ) -> dict:
     client = client or KalshiClient()
     limit = limit or settings.scan_limit
@@ -214,18 +386,22 @@ def scan_opportunities(
                 continue
         enriched.append(row)
 
-    enriched.sort(key=lambda r: (r["score"], r["best_payout_multiple"]), reverse=True)
+    sort_mode = (sort or "payout").strip().lower()
+    if sort_mode not in {"payout", "score"}:
+        sort_mode = "payout"
+    sort_scan_rows(enriched, sort_mode)
     now = datetime.now(timezone.utc).isoformat()
     return {
         "count": len(enriched),
         "scanned": len(markets),
+        "sort": sort_mode,
         "host": client.host,
         "host_key": settings.host_key,
         "updated_at": now,
         "cache_ttl_seconds": settings.cache_ttl,
         "disclaimer": (
-            "Edge and coherence are model estimates, not guarantees. "
-            "No 100% win-rate claim. Risk of loss."
+            "Edge, payout multiples, and half-Kelly size are estimates, not guarantees. "
+            "A high multiple means a low market-implied chance. No 100% win-rate claim. Risk of loss."
         ),
         "markets": enriched,
     }
