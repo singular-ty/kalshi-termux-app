@@ -57,9 +57,9 @@ def _refresh_client() -> KalshiClient:
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
     return templates.TemplateResponse(
+        request,
         "index.html",
         {
-            "request": request,
             "version": __version__,
             "host": settings.api_base,
             "dry_run": settings.dry_run,
