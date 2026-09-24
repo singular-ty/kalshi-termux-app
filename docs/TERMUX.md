@@ -38,3 +38,5 @@ pip install --user -r requirements.txt
 pip uninstall -y cryptography
 PYTHONPATH=. python -m uvicorn app.main:app --host 0.0.0.0 --port 8787
 ```
+
+If `GET /` returns 500 with `TypeError: unhashable type: 'dict'`, update `app/main.py` or `git pull` so `TemplateResponse` passes `request` first (Starlette 1.x).
