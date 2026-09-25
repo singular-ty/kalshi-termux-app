@@ -92,5 +92,8 @@ def test_enrich_explainer_and_order():
     assert rows[0]["signal"] in {"GO", "NO-GO"}
     assert "allocation" in rows[0]["gemini_kelly"]
     assert rows[0]["model_p_source"] == "market_shrink"
+    assert rows[0]["prob_source"] == "market_shrink"
+    assert rows[0]["sports_game"] is False
+    assert rows[0]["espn"] is None
     multiples = [r["best_payout_multiple"] for r in rows]
     assert multiples == sorted(multiples, reverse=True)
