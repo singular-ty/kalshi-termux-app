@@ -161,7 +161,9 @@ label { display: block; font-size: 0.72rem; color: var(--muted); margin: 8px 0 4
 }
 .chip.go { color: var(--green); border-color: rgba(52,211,153,0.4); }
 .chip.nogo { color: var(--red); border-color: rgba(248,113,113,0.35); }
+.chip.espn { color: var(--cyan); border-color: rgba(77,226,255,0.45); }
 .market-item .why { margin: 8px 0 0; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
+.espn-hint { color: var(--text); }
 .explainer p { margin: 8px 0; font-size: 0.88rem; line-height: 1.4; }
 
 .matrix {

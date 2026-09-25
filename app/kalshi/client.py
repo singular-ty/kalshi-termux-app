@@ -172,6 +172,26 @@ class KalshiClient:
                 return self.auth_get("/trade-api/v2/markets", params=params)
             raise
 
+    def get_events(
+        self,
+        series_ticker: str,
+        status: str = "open",
+        limit: int = 30,
+        cursor: Optional[str] = None,
+        with_nested_markets: bool = True,
+    ) -> dict:
+        """Open events for one series. Nested markets follow soonest-first."""
+        params: dict[str, Any] = {
+            "series_ticker": series_ticker,
+            "limit": limit,
+            "with_nested_markets": "true" if with_nested_markets else "false",
+        }
+        if status:
+            params["status"] = status
+        if cursor:
+            params["cursor"] = cursor
+        return self.public_get("/trade-api/v2/events", params=params)
+
     def get_market(self, ticker: str) -> dict:
         return self.public_get(f"/trade-api/v2/markets/{ticker}")
 

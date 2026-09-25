@@ -6,13 +6,26 @@ from typing import Any, Optional
 
 from app.config import settings
 from app.kalshi.client import KalshiClient
+from app.strategy.espn import (
+    EspnBoard,
+    get_board,
+    is_full_game_market,
+    select_nearby_games,
+    us_today,
+)
 from app.strategy.kelly import gemini_nash_payoff, kelly_from_payout_odds, kelly_size
 from app.strategy.nash import nash_decision, nash_to_dict
 
 # GO if Gemini Nash payoff clears this. Heuristic only — not a win guarantee.
 NASH_GO_THRESHOLD = 0.4
-# TODO: ESPN scoreboard (NFL/NBA/MLB/NHL/NCAAF/NCAAB) is not wired.
-# model_p stays a shrink toward 0.5 ("market_shrink") until that lands.
+# Full-game NFL/NBA/MLB/NHL/NCAAF/NCAAB series merged into the scan so a
+# scoreboard match can set espn_live / espn_pre. Unmatched rows stay market_shrink.
+_GAME_SERIES = ("KXNFLGAME", "KXNBAGAME", "KXMLBGAME", "KXNHLGAME", "KXNCAAFGAME", "KXNCAABGAME")
+_SOURCE_PLAIN = {
+    "espn_live": "ESPN live scoreboard",
+    "espn_pre": "ESPN pregame line",
+    "market_shrink": "market shrink",
+}
 
 
 def _cents_to_dollars(val: Any) -> Optional[float]:
@@ -73,6 +86,8 @@ def _build_explainer(
     model_p: float,
     allocation: float,
     binary_contracts: int,
+    prob_source: str = "market_shrink",
+    espn_hint: str = "",
 ) -> dict:
     """Plain-English odds card. Estimates only — never a guaranteed win."""
     side_u = side.upper()
@@ -103,17 +118,24 @@ def _build_explainer(
         f"If you buy {side_u} for {cents}¢ and you're right, Kalshi pays $1 → about {mult:g}x "
         f"(1/{price:.4g}). If wrong, you lose the {cents}¢."
     )
-    why_odds = (
-        f"The {side_u} ask ({cents}¢) is the market-implied chance (~{implied}%). "
-        "No ESPN scoreboard is attached, so the model uses a conservative shrink from that "
-        "price toward 50% (source: market_shrink). That is an estimate, not a lock."
-    )
+    source_plain = _SOURCE_PLAIN.get(prob_source, prob_source)
+    if prob_source == "market_shrink":
+        why_odds = (
+            f"The {side_u} ask ({cents}¢) is the market-implied chance (~{implied}%). "
+            "No ESPN scoreboard match, so the model uses a conservative shrink from that "
+            "price toward 50% (source: market_shrink). That is an estimate, not a lock."
+        )
+    else:
+        why_odds = (
+            f"{espn_hint} The {side_u} ask ({cents}¢) is still the market-implied chance "
+            f"(~{implied}%). Source: {prob_source}. A high payout is not a likely win."
+        )
     edge = model_p - price
     gk_contracts = int(allocation // price) if price > 0 and allocation > 0 else 0
     contracts = gk_contracts or binary_contracts
     edge_plain = (
         f"Book says {_fmt_pct(price)}%. Our model says {_fmt_pct(model_p)}% "
-        f"(market shrink, not a lock). Edge ≈ {edge:+.3f}. "
+        f"({source_plain}, not a lock). Edge ≈ {edge:+.3f}. "
         f"Half-Kelly suggests ${allocation:.2f}"
         + (f" / {contracts} contracts." if contracts else " (size rounds to 0 contracts).")
     )
@@ -182,7 +204,11 @@ def sort_scan_rows(rows: list[dict], sort: str = "payout") -> list[dict]:
     return rows
 
 
-def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
+def enrich_market(
+    m: dict,
+    bankroll: float = 1000.0,
+    espn: Optional[EspnBoard] = None,
+) -> Optional[dict]:
     ticker = m.get("ticker") or ""
     if "CROSSCATEGORY" in ticker.upper():
         return None
@@ -236,9 +262,21 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
     except (TypeError, ValueError):
         spread_cents = abs(yes_ask + no_ask - 1.0) * 100
 
+    sports_game = is_full_game_market(m)
+    estimate = None
+    if sports_game:
+        try:
+            estimate = (espn if espn is not None else get_board()).estimate(m)
+        except Exception:
+            estimate = None
+    model_p_yes = estimate.p_yes if estimate is not None else None
+    prob_source = estimate.source if estimate is not None else "market_shrink"
+    espn_hint = estimate.hint if estimate is not None else ""
+
     nash = nash_decision(
         yes_ask=yes_ask,
         no_ask=no_ask,
+        model_prob_yes=model_p_yes,
         spread_cents=spread_cents,
         volume=vol,
         open_interest=oi,
@@ -275,8 +313,7 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
     )
     nash_pay = gemini_nash_payoff(best_p, best_mult)
     signal = "GO" if nash_pay > NASH_GO_THRESHOLD else "NO-GO"
-    # model_p_source stays market_shrink until an ESPN layer exists.
-    model_p_source = "market_shrink"
+    model_p_source = prob_source
 
     cheap = (yes_ask * 100 <= settings.max_contract_price_cents) or (
         no_ask * 100 <= settings.max_contract_price_cents
@@ -300,6 +337,8 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
         model_p=best_p,
         allocation=gk.allocation,
         binary_contracts=kelly.contracts,
+        prob_source=prob_source,
+        espn_hint=espn_hint,
     )
 
     return {
@@ -316,6 +355,10 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
         "best_side": best_side,
         "payout_odds": round(best_mult, 4),
         "model_p_source": model_p_source,
+        "prob_source": prob_source,
+        "sports_game": sports_game,
+        "espn_hint": espn_hint,
+        "espn": estimate.as_espn() if estimate is not None else None,
         "spread_cents": round(spread_cents, 2),
         "volume": vol,
         "open_interest": oi,
@@ -348,12 +391,48 @@ def enrich_market(m: dict, bankroll: float = 1000.0) -> Optional[dict]:
     }
 
 
+def _merge_nearby_game_markets(client: KalshiClient, markets: list[dict]) -> list[dict]:
+    """Add open full-game winner markets near today. Failures stay on the book scan.
+
+    Events are soonest-first. The plain markets feed is not, so a college
+    weekend can sit behind later dates.
+    """
+    extra: list[dict] = []
+    for series in _GAME_SERIES:
+        try:
+            if hasattr(client, "get_events"):
+                raw = client.get_events(
+                    series_ticker=series,
+                    status="open",
+                    limit=30,
+                    with_nested_markets=True,
+                )
+                for event in raw.get("events") or []:
+                    extra.extend(event.get("markets") or [])
+            else:
+                raw = client.get_markets(status="open", limit=100, series_ticker=series)
+                extra.extend(raw.get("markets") or [])
+        except Exception:
+            continue
+    seen = {m.get("ticker") for m in markets}
+    merged = list(markets)
+    for market in select_nearby_games(extra, us_today()):
+        ticker = market.get("ticker")
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        merged.append(market)
+    return merged
+
+
 def scan_opportunities(
     client: Optional[KalshiClient] = None,
     limit: Optional[int] = None,
     bankroll: float = 1000.0,
     only_actionable: bool = False,
     sort: str = "payout",
+    espn: Optional[EspnBoard] = None,
+    include_game_series: bool = True,
 ) -> dict:
     client = client or KalshiClient()
     limit = limit or settings.scan_limit
@@ -375,16 +454,34 @@ def scan_opportunities(
         if not batch or not cursor:
             break
     markets = markets[: max(limit * 2, limit)]  # allow filter headroom
+    if include_game_series:
+        markets = _merge_nearby_game_markets(client, markets)
+    board = espn if espn is not None else get_board()
     enriched = []
+    espn_stats = {"matched": 0, "live": 0, "pre": 0, "sports_unmatched": 0, "fallback": 0}
     for m in markets:
-        row = enrich_market(m, bankroll=bankroll)
+        row = enrich_market(m, bankroll=bankroll, espn=board)
         if not row:
             continue
         if only_actionable and row["nash"]["action"] == "PASS":
             # still keep high-payout cheap contracts for the scanner board
             if not (row["cheap_contract"] and row["high_payout"]):
                 continue
+        src = row.get("prob_source") or "market_shrink"
+        if src == "espn_live":
+            espn_stats["matched"] += 1
+            espn_stats["live"] += 1
+        elif src == "espn_pre":
+            espn_stats["matched"] += 1
+            espn_stats["pre"] += 1
+        elif row.get("sports_game"):
+            espn_stats["sports_unmatched"] += 1
+            espn_stats["fallback"] += 1
+        else:
+            espn_stats["fallback"] += 1
         enriched.append(row)
+    espn_stats["fetch_ok"] = board.fetch_ok
+    espn_stats["fetch_errors"] = board.fetch_errors
 
     sort_mode = (sort or "payout").strip().lower()
     if sort_mode not in {"payout", "score"}:
@@ -401,7 +498,10 @@ def scan_opportunities(
         "cache_ttl_seconds": settings.cache_ttl,
         "disclaimer": (
             "Edge, payout multiples, and half-Kelly size are estimates, not guarantees. "
-            "A high multiple means a low market-implied chance. No 100% win-rate claim. Risk of loss."
+            "A high multiple means a low market-implied chance. "
+            "ESPN scoreboard matches (espn_live / espn_pre) are context, not a sure outcome. "
+            "No 100% win-rate claim. Risk of loss."
         ),
+        "espn": espn_stats,
         "markets": enriched,
     }

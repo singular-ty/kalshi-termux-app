@@ -197,8 +197,10 @@ function renderMarkets(data) {
     `enriched ${data.count}/${data.scanned}`,
     `sort ${data.sort || "payout"}`,
     `TTL ${data.cache_ttl_seconds}s`,
-  ].join(" · ");
-  $("#scan-meta").textContent = meta + " — " + (data.disclaimer || "");
+  ];
+  if (data.espn) meta.push(`ESPN ${data.espn.matched || 0} matched`);
+  const metaText = meta.join(" · ");
+  $("#scan-meta").textContent = metaText + " — " + (data.disclaimer || "");
 
   payoutSort(data.markets).slice(0, 60).forEach((m) => {
     const div = document.createElement("div");
@@ -207,10 +209,12 @@ function renderMarkets(data) {
     const sig = m.signal === "GO" ? "GO" : "NO-GO";
     const gk = m.gemini_kelly || {};
     const why = (m.explainer && (m.explainer.edge_plain || m.explainer.why_odds)) || "";
+    const hint = m.espn_hint || "";
     const mult = m.best_payout_multiple ?? "—";
     div.innerHTML = `
       <div class="stats">
         <span class="chip payout">${mult}x</span>
+        ${probSourceChip(m)}
         <span class="chip ${sig === "GO" ? "go" : "nogo"}">${sig}</span>
         <span class="chip">Gemini Kelly $${gk.allocation ?? "—"}</span>
         <span class="chip">edge ${m.kelly?.edge ?? "—"}</span>
@@ -224,10 +228,18 @@ function renderMarkets(data) {
         <span class="chip action">${action}</span>
         <span class="chip">Nash ${m.nash_payoff_gemini ?? "—"}</span>
       </div>
+      ${hint ? `<p class="why espn-hint">${escapeHtml(hint)}</p>` : ""}
       <p class="why">${escapeHtml(why)}</p>`;
     div.addEventListener("click", () => openContract(m.ticker, m));
     list.appendChild(div);
   });
+}
+
+function probSourceChip(m) {
+  const src = (m && (m.prob_source || m.model_p_source)) || "";
+  if (src === "espn_live") return `<span class="chip espn">ESPN live</span>`;
+  if (src === "espn_pre") return `<span class="chip espn">ESPN pregame</span>`;
+  return "";
 }
 
 function escapeHtml(s) {
@@ -296,6 +308,7 @@ function paintContract(data) {
     <div style="margin:6px 0 10px">${escapeHtml(e.title)}</div>
     <div class="stats">
       <span class="chip payout">${e.best_payout_multiple ?? "—"}x</span>
+      ${probSourceChip(e)}
       <span class="chip ${sig === "GO" ? "go" : "nogo"}">${sig}</span>
       <span class="chip yes">YES ask ${e.yes_ask_cents}¢ (${e.yes_payout_multiple}x)</span>
       <span class="chip no">NO ask ${e.no_ask_cents}¢ (${e.no_payout_multiple}x)</span>
@@ -308,6 +321,7 @@ function paintContract(data) {
       <p><strong>Price.</strong> ${escapeHtml(ex.price_plain || "")}</p>
       <p><strong>You win if.</strong> ${escapeHtml(ex.win_if || "")}</p>
       <p><strong>You lose if.</strong> ${escapeHtml(ex.lose_if || "")}</p>
+      ${e.espn_hint ? `<p class="espn-hint"><strong>ESPN.</strong> ${escapeHtml(e.espn_hint)}</p>` : ""}
       <p><strong>Why these odds.</strong> ${escapeHtml(ex.why_odds || "")}</p>
       <p><strong>Edge.</strong> ${escapeHtml(ex.edge_plain || "")}</p>
       <p><strong>Payout.</strong> ${escapeHtml(ex.payout_plain || "")}</p>
